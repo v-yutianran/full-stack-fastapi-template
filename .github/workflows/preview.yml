@@ -30,7 +30,7 @@ jobs:
       HEAD_SHA: ${{ github.event.pull_request.head.sha }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           persist-credentials: false
 
@@ -60,6 +60,7 @@ jobs:
           - API docs: ${url}/docs
           - Login: \`${user}\` / \`${pass}\`
           - Smoke tests: ⏳ running
+          - 操作：评论 \`/preview-redeploy\` 重新部署并跑冒烟，评论 \`/preview-destroy\` 销毁环境
 
           <sub>Updated $(date -u +%Y-%m-%dT%H:%MZ) · commit ${HEAD_SHA:0:7}</sub>
           EOF
@@ -83,7 +84,7 @@ jobs:
 
       - name: Set up Node.js
         if: github.event.action != 'closed'
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
 
@@ -127,6 +128,7 @@ jobs:
           - API docs: ${PREVIEW_URL}/docs
           - Login: \`${PREVIEW_USER}\` / \`${PREVIEW_PASSWORD}\`
           - Smoke tests: ${result}
+          - 操作：评论 \`/preview-redeploy\` 重新部署并跑冒烟，评论 \`/preview-destroy\` 销毁环境
 
           <sub>Updated $(date -u +%Y-%m-%dT%H:%MZ) · commit ${HEAD_SHA:0:7}</sub>
           EOF

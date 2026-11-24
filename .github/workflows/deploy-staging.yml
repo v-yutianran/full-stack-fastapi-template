@@ -18,8 +18,13 @@ concurrency:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
+      - name: Checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+
       - name: Trigger Coolify staging deployment
         id: trigger
         env:
@@ -67,3 +72,50 @@ jobs:
           done
           echo "::error::Timed out waiting for staging deployment ${DEPLOYMENT_UUID}"
           exit 1
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+
+      - name: Install Playwright
+        run: |
+          set -euo pipefail
+          cd smoke
+          npm install --no-audit --no-fund
+          npx playwright install --with-deps chromium
+
+      - name: Run Playwright smoke tests against staging
+        id: smoke
+        continue-on-error: true
+        env:
+          PREVIEW_URL: ${{ vars.STAGING_URL }}
+          PREVIEW_USER: admin@yutianran.cn
+          PREVIEW_PASSWORD: ${{ secrets.STAGING_SUPERUSER_PASSWORD }}
+        run: |
+          set -euo pipefail
+          cd smoke
+          npx playwright test
+
+      - name: Report staging smoke result
+        if: always()
+        run: |
+          set -euo pipefail
+          if [ "${{ steps.smoke.outcome }}" = "success" ]; then
+            {
+              echo "### ✅ Staging smoke tests passed"
+              echo ""
+              echo "- URL: ${{ vars.STAGING_URL }}"
+              echo "- Deployment: \`${{ steps.trigger.outputs.deployment_uuid }}\`"
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            {
+              echo "### ❌ Staging smoke tests failed"
+              echo ""
+              echo "- URL: ${{ vars.STAGING_URL }}"
+              echo "- Deployment: \`${{ steps.trigger.outputs.deployment_uuid }}\`"
+              echo "- 查看上方 “Run Playwright smoke tests against staging” 步骤日志"
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::Staging smoke tests failed"
+            exit 1
+          fi

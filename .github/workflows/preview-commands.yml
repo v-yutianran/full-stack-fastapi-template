@@ -1,0 +1,199 @@
+name: Preview Commands
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: preview-pr-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  command:
+    if: >
+      github.event.issue.pull_request != null &&
+      (github.event.comment.author_association == 'OWNER' ||
+       github.event.comment.author_association == 'MEMBER' ||
+       github.event.comment.author_association == 'COLLABORATOR') &&
+      contains(github.event.comment.body, '/preview-')
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      PR_NUMBER: ${{ github.event.issue.number }}
+      REPO_FULL: ${{ github.repository }}
+      COOLIFY_URL: ${{ vars.COOLIFY_URL }}
+      COOLIFY_TOKEN: ${{ secrets.COOLIFY_TOKEN }}
+      COOLIFY_PREVIEW_PROJECT_UUID: ${{ vars.COOLIFY_PREVIEW_PROJECT_UUID }}
+      COOLIFY_SERVER_UUID: ${{ vars.COOLIFY_SERVER_UUID }}
+      PREVIEW_SECRET_SALT: ${{ secrets.PREVIEW_SECRET_SALT }}
+      COMMENT_BODY: ${{ github.event.comment.body }}
+    steps:
+      - name: Parse command
+        id: parse
+        run: |
+          set -euo pipefail
+          action="none"
+          if printf '%s' "$COMMENT_BODY" | grep -qiE '(^|[[:space:]])/preview-redeploy([[:space:]]|$)'; then
+            action="redeploy"
+          elif printf '%s' "$COMMENT_BODY" | grep -qiE '(^|[[:space:]])/preview-destroy([[:space:]]|$)'; then
+            action="destroy"
+          fi
+          echo "action=${action}" >> "$GITHUB_OUTPUT"
+          echo "parsed action: ${action}"
+
+      - name: Resolve pull request head
+        id: pr
+        if: steps.parse.outputs.action == 'redeploy'
+        run: |
+          set -euo pipefail
+          head_ref=$(gh api "repos/${REPO_FULL}/pulls/${PR_NUMBER}" --jq '.head.ref')
+          head_sha=$(gh api "repos/${REPO_FULL}/pulls/${PR_NUMBER}" --jq '.head.sha')
+          echo "head_ref=${head_ref}" >> "$GITHUB_OUTPUT"
+          echo "head_sha=${head_sha}" >> "$GITHUB_OUTPUT"
+          echo "PR head: ${head_ref} (${head_sha})"
+
+      - name: Checkout
+        if: steps.parse.outputs.action != 'none'
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+
+      - name: Destroy preview environment
+        if: steps.parse.outputs.action == 'destroy'
+        env:
+          ACTION: down
+        run: |
+          set -euo pipefail
+          bash .github/scripts/coolify-preview.sh | tee /tmp/preview.out
+
+      - name: Redeploy preview environment
+        if: steps.parse.outputs.action == 'redeploy'
+        env:
+          ACTION: up
+          HEAD_REF: ${{ steps.pr.outputs.head_ref }}
+        run: |
+          set -euo pipefail
+          bash .github/scripts/coolify-preview.sh | tee /tmp/preview.out
+
+      - name: Export preview details
+        if: steps.parse.outputs.action == 'redeploy'
+        run: |
+          set -euo pipefail
+          url=$(grep -oP '^PREVIEW_URL=\K.*' /tmp/preview.out | tail -1)
+          user=$(grep -oP '^PREVIEW_USER=\K.*' /tmp/preview.out | tail -1)
+          pass=$(grep -oP '^PREVIEW_PASSWORD=\K.*' /tmp/preview.out | tail -1)
+          {
+            echo "PREVIEW_URL=${url}"
+            echo "PREVIEW_USER=${user}"
+            echo "PREVIEW_PASSWORD=${pass}"
+          } >> "$GITHUB_ENV"
+
+      - name: Set up Node.js
+        if: steps.parse.outputs.action == 'redeploy'
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+
+      - name: Install Playwright
+        if: steps.parse.outputs.action == 'redeploy'
+        run: |
+          set -euo pipefail
+          cd smoke
+          npm install --no-audit --no-fund
+          npx playwright install --with-deps chromium
+
+      - name: Run Playwright smoke tests
+        if: steps.parse.outputs.action == 'redeploy'
+        id: smoke
+        continue-on-error: true
+        env:
+          PREVIEW_URL: ${{ env.PREVIEW_URL }}
+          PREVIEW_USER: ${{ env.PREVIEW_USER }}
+          PREVIEW_PASSWORD: ${{ env.PREVIEW_PASSWORD }}
+        run: |
+          set -euo pipefail
+          cd smoke
+          npx playwright test
+
+      - name: Update preview comment
+        if: steps.parse.outputs.action != 'none'
+        env:
+          HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
+        run: |
+          set -euo pipefail
+          comment_id=$(gh api "repos/${REPO_FULL}/issues/${PR_NUMBER}/comments" --paginate \
+            --jq '.[] | select(.body | contains("<!-- coolify-preview -->")) | .id' | head -1 || true)
+
+          if [ "${{ steps.parse.outputs.action }}" = "destroy" ]; then
+            body=$(cat <<EOF
+          <!-- coolify-preview -->
+          ## 🧹 Preview environment destroyed
+
+          - 环境已被手动销毁，访问地址已失效
+          - 需要恢复：在本 PR 评论 \`/preview-redeploy\`
+
+          <sub>Destroyed $(date -u +%Y-%m-%dT%H:%MZ)</sub>
+          EOF
+            )
+          else
+            if [ "${{ steps.smoke.outcome }}" = "success" ]; then
+              result="✅ passed"
+            else
+              result="❌ failed (see workflow logs)"
+            fi
+            body=$(cat <<EOF
+          <!-- coolify-preview -->
+          ## 🚀 Preview environment
+
+          - Site: ${PREVIEW_URL}
+          - API docs: ${PREVIEW_URL}/docs
+          - Login: \`${PREVIEW_USER}\` / \`${PREVIEW_PASSWORD}\`
+          - Smoke tests: ${result}
+          - 操作：评论 \`/preview-redeploy\` 重新部署并跑冒烟，评论 \`/preview-destroy\` 销毁环境
+
+          <sub>Manual redeploy $(date -u +%Y-%m-%dT%H:%MZ) · commit ${HEAD_SHA:0:7}</sub>
+          EOF
+            )
+          fi
+
+          if [ -n "${comment_id}" ]; then
+            jq -n --arg b "${body}" '{body:$b}' | gh api -X PATCH "repos/${REPO_FULL}/issues/comments/${comment_id}" --input - >/dev/null
+            echo "updated preview comment ${comment_id}"
+          else
+            jq -n --arg b "${body}" '{body:$b}' | gh api -X POST "repos/${REPO_FULL}/issues/${PR_NUMBER}/comments" --input - >/dev/null
+            echo "created preview comment"
+          fi
+
+      - name: Report command result
+        if: always() && steps.parse.outputs.action != 'none'
+        env:
+          ACTION_TAKEN: ${{ steps.parse.outputs.action }}
+          SMOKE_OUTCOME: ${{ steps.smoke.outcome }}
+        run: |
+          set -euo pipefail
+          if [ "${ACTION_TAKEN}" = "destroy" ]; then
+            if [ -n "${PREVIEW_URL:-}" ]; then
+              message="🤖 已执行 \`/preview-destroy\`，预览环境已销毁。"
+            else
+              message="🤖 已执行 \`/preview-destroy\`。"
+            fi
+          else
+            if [ "${SMOKE_OUTCOME}" = "success" ]; then
+              message="🤖 已执行 \`/preview-redeploy\`：预览环境重新部署完成，冒烟测试 ✅ 通过。${PREVIEW_URL}"
+            else
+              message="🤖 已执行 \`/preview-redeploy\`：部署完成但冒烟测试 ❌ 失败，请查看工作流日志。${PREVIEW_URL}"
+            fi
+          fi
+          jq -n --arg b "${message}" '{body:$b}' | gh api -X POST "repos/${REPO_FULL}/issues/${PR_NUMBER}/comments" --input - >/dev/null
+
+      - name: Fail when smoke tests fail
+        if: steps.parse.outputs.action == 'redeploy' && steps.smoke.outcome != 'success'
+        run: |
+          echo "::error::Playwright smoke tests failed after manual redeploy"
+          exit 1
