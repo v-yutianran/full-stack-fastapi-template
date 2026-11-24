@@ -92,3 +92,5 @@ The Full Stack FastAPI Template is licensed under the terms of the MIT license.
 第二次推送验证：2026-11-24T18:26:57Z
 
 第三次推送验证（启用 Actions 后）：2026-11-24T18:27:51Z
+
+PR #3：验证种子数据与 Playwright 冒烟：2026-11-24T23:19:37Z
