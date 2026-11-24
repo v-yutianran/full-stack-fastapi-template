@@ -157,8 +157,7 @@ down() {
 
 sweep() { # delete preview apps/dbs whose PR is no longer open
   local repo="${REPO_FULL:?}" open_numbers app name num db
-  open_numbers=$(gh api "repos/${repo}/pulls?state=open&per_page=100" --jq '.[].number' 2>/dev/null || true)
-  if [ -z "${open_numbers}" ] && [ "${ALLOW_EMPTY_OPEN:-0}" != "1" ]; then
+  if ! open_numbers=$(gh api "repos/${repo}/pulls?state=open&per_page=100" --paginate --jq '.[].number'); then
     echo "could not fetch open PRs; refusing to sweep" >&2
     return 1
   fi
