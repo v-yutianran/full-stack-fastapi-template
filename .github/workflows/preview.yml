@@ -17,7 +17,7 @@ jobs:
     # Only same-repository branches get secrets and a preview.
     if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     env:
       COOLIFY_URL: ${{ vars.COOLIFY_URL }}
       COOLIFY_TOKEN: ${{ secrets.COOLIFY_TOKEN }}
@@ -27,6 +27,7 @@ jobs:
       PR_NUMBER: ${{ github.event.pull_request.number }}
       HEAD_REF: ${{ github.head_ref }}
       REPO_FULL: ${{ github.repository }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -41,13 +42,13 @@ jobs:
           set -euo pipefail
           bash .github/scripts/coolify-preview.sh | tee /tmp/preview.out
 
-      - name: Comment preview URL on pull request
+      - name: Publish preview URL comment
         if: github.event.action != 'closed'
+        id: comment
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          HEAD_SHA="${{ github.event.pull_request.head.sha }}"
           url=$(grep -oP '^PREVIEW_URL=\K.*' /tmp/preview.out | tail -1)
           user=$(grep -oP '^PREVIEW_USER=\K.*' /tmp/preview.out | tail -1)
           pass=$(grep -oP '^PREVIEW_PASSWORD=\K.*' /tmp/preview.out | tail -1)
@@ -58,6 +59,7 @@ jobs:
           - Site: ${url}
           - API docs: ${url}/docs
           - Login: \`${user}\` / \`${pass}\`
+          - Smoke tests: ⏳ running
 
           <sub>Updated $(date -u +%Y-%m-%dT%H:%MZ) · commit ${HEAD_SHA:0:7}</sub>
           EOF
@@ -66,10 +68,74 @@ jobs:
             --jq '.[] | select(.body | contains("<!-- coolify-preview -->")) | .id' | head -1 || true)
           if [ -n "${existing}" ]; then
             jq -n --arg b "${body}" '{body:$b}' | gh api -X PATCH "repos/${REPO_FULL}/issues/comments/${existing}" --input - >/dev/null
-            echo "updated preview comment ${existing}"
+            comment_id="${existing}"
           else
-            jq -n --arg b "${body}" '{body:$b}' | gh api -X POST "repos/${REPO_FULL}/issues/${PR_NUMBER}/comments" --input - >/dev/null
-            echo "created preview comment"
+            response=$(jq -n --arg b "${body}" '{body:$b}' | gh api -X POST "repos/${REPO_FULL}/issues/${PR_NUMBER}/comments" --input -)
+            comment_id=$(printf '%s' "${response}" | jq -r '.id')
+          fi
+          {
+            echo "PREVIEW_URL=${url}"
+            echo "PREVIEW_USER=${user}"
+            echo "PREVIEW_PASSWORD=${pass}"
+            echo "COMMENT_ID=${comment_id}"
+          } >> "$GITHUB_ENV"
+          echo "preview comment ready: ${comment_id}"
+
+      - name: Set up Node.js
+        if: github.event.action != 'closed'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install Playwright
+        if: github.event.action != 'closed'
+        run: |
+          set -euo pipefail
+          cd smoke
+          npm install --no-audit --no-fund
+          npx playwright install --with-deps chromium
+
+      - name: Run Playwright smoke tests
+        if: github.event.action != 'closed'
+        id: smoke
+        continue-on-error: true
+        env:
+          PREVIEW_URL: ${{ env.PREVIEW_URL }}
+          PREVIEW_USER: ${{ env.PREVIEW_USER }}
+          PREVIEW_PASSWORD: ${{ env.PREVIEW_PASSWORD }}
+        run: |
+          set -euo pipefail
+          cd smoke
+          npx playwright test
+
+      - name: Publish smoke test result
+        if: always() && github.event.action != 'closed'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ "${{ steps.smoke.outcome }}" = "success" ]; then
+            result="✅ passed"
+          else
+            result="❌ failed (see workflow logs)"
+          fi
+          body=$(cat <<EOF
+          <!-- coolify-preview -->
+          ## 🚀 Preview environment
+
+          - Site: ${PREVIEW_URL}
+          - API docs: ${PREVIEW_URL}/docs
+          - Login: \`${PREVIEW_USER}\` / \`${PREVIEW_PASSWORD}\`
+          - Smoke tests: ${result}
+
+          <sub>Updated $(date -u +%Y-%m-%dT%H:%MZ) · commit ${HEAD_SHA:0:7}</sub>
+          EOF
+          )
+          jq -n --arg b "${body}" '{body:$b}' | gh api -X PATCH "repos/${REPO_FULL}/issues/comments/${COMMENT_ID}" --input - >/dev/null
+          echo "smoke result: ${result}"
+          if [ "${{ steps.smoke.outcome }}" != "success" ]; then
+            echo "::error::Playwright smoke tests failed for the preview environment"
+            exit 1
           fi
 
       - name: Clean up preview environment

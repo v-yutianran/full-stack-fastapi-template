@@ -116,10 +116,11 @@ up() {
         {key:"DATABASE_URL",value:$dburl},
         {key:"EMAILS_FROM_EMAIL",value:"noreply@yutianran.cn"},
         {key:"SMTP_HOST",value:""},
-        {key:"ENVIRONMENT",value:"preview"}
+        {key:"ENVIRONMENT",value:"preview"},
+        {key:"SEED_DEMO_DATA",value:"true"}
       ]}')
   api -X PATCH "$API/applications/$app/envs/bulk" -d "$envs" >/dev/null
-  api -X PATCH "$API/applications/$app" -d '{"post_deployment_command":"bash scripts/prestart.sh"}' >/dev/null
+  api -X PATCH "$API/applications/$app" -d '{"post_deployment_command":"bash scripts/post_start.sh"}' >/dev/null
 
   # 4. deploy and wait
   dep=$(api -X POST "$API/deploy?uuid=${app}&force=true" -d '{}' | jq -r '.deployments[0].deployment_uuid')
