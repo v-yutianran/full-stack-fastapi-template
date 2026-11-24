@@ -1,0 +1,35 @@
+name: Preview Sweep
+
+on:
+  schedule:
+    - cron: "30 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  sweep:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      COOLIFY_URL: ${{ vars.COOLIFY_URL }}
+      COOLIFY_TOKEN: ${{ secrets.COOLIFY_TOKEN }}
+      COOLIFY_PREVIEW_PROJECT_UUID: ${{ vars.COOLIFY_PREVIEW_PROJECT_UUID }}
+      COOLIFY_SERVER_UUID: ${{ vars.COOLIFY_SERVER_UUID }}
+      PREVIEW_SECRET_SALT: ${{ secrets.PREVIEW_SECRET_SALT }}
+      REPO_FULL: ${{ github.repository }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Remove previews for closed pull requests
+        env:
+          ACTION: sweep
+        run: |
+          set -euo pipefail
+          bash .github/scripts/coolify-preview.sh
