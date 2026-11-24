@@ -9,9 +9,16 @@ test("API health check responds", async ({ request }) => {
   expect((await res.text()).trim()).toBe("true")
 })
 
-test("OpenAPI docs page loads", async ({ page }) => {
+test("OpenAPI docs and schema load", async ({ page, request }) => {
   await page.goto("/docs")
-  await expect(page.locator("body")).toContainText(/Swagger UI/i)
+  await expect(page.locator("body")).toContainText(/OAS\s*3\./i)
+
+  const res = await request.get("/openapi.json")
+  expect(res.ok()).toBeTruthy()
+  const spec = await res.json()
+  expect(spec.openapi).toBeTruthy()
+  expect(spec.paths["/api/v1/items/"]).toBeTruthy()
+  expect(spec.paths["/api/v1/utils/health-check/"]).toBeTruthy()
 })
 
 test("frontend serves the app", async ({ page }) => {
