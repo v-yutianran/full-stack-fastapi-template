@@ -13,7 +13,7 @@ test("OpenAPI docs and schema load", async ({ page, request }) => {
   await page.goto("/docs")
   await expect(page.locator("body")).toContainText(/OAS\s*3\./i)
 
-  const res = await request.get("/openapi.json")
+  const res = await request.get("/api/v1/openapi.json")
   expect(res.ok()).toBeTruthy()
   const spec = await res.json()
   expect(spec.openapi).toBeTruthy()
