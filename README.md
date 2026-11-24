@@ -96,3 +96,5 @@ The Full Stack FastAPI Template is licensed under the terms of the MIT license.
 ### 预览环境演示
 
 这一行用来验证 PR 预览环境。
+
+更新验证：2026-11-24T22:52:38Z
