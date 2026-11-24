@@ -1,0 +1,80 @@
+name: PR Preview
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, closed]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: preview-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  preview:
+    # Only same-repository branches get secrets and a preview.
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      COOLIFY_URL: ${{ vars.COOLIFY_URL }}
+      COOLIFY_TOKEN: ${{ secrets.COOLIFY_TOKEN }}
+      COOLIFY_PREVIEW_PROJECT_UUID: ${{ vars.COOLIFY_PREVIEW_PROJECT_UUID }}
+      COOLIFY_SERVER_UUID: ${{ vars.COOLIFY_SERVER_UUID }}
+      PREVIEW_SECRET_SALT: ${{ secrets.PREVIEW_SECRET_SALT }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      HEAD_REF: ${{ github.head_ref }}
+      REPO_FULL: ${{ github.repository }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Deploy preview environment
+        if: github.event.action != 'closed'
+        env:
+          ACTION: up
+        run: |
+          set -euo pipefail
+          bash .github/scripts/coolify-preview.sh | tee /tmp/preview.out
+
+      - name: Comment preview URL on pull request
+        if: github.event.action != 'closed'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          url=$(grep -oP '^PREVIEW_URL=\K.*' /tmp/preview.out | tail -1)
+          user=$(grep -oP '^PREVIEW_USER=\K.*' /tmp/preview.out | tail -1)
+          pass=$(grep -oP '^PREVIEW_PASSWORD=\K.*' /tmp/preview.out | tail -1)
+          body=$(cat <<EOF
+          <!-- coolify-preview -->
+          ## 🚀 Preview environment
+
+          - Site: ${url}
+          - API docs: ${url}/docs
+          - Login: \`${user}\` / \`${pass}\`
+
+          <sub>Updated $(date -u +%Y-%m-%dT%H:%MZ) · commit ${GITHUB_SHA:0:7}</sub>
+          EOF
+          )
+          existing=$(gh api "repos/${REPO_FULL}/issues/${PR_NUMBER}/comments" --paginate \
+            --jq '.[] | select(.body | contains("<!-- coolify-preview -->")) | .id' | head -1 || true)
+          if [ -n "${existing}" ]; then
+            jq -n --arg b "${body}" '{body:$b}' | gh api -X PATCH "repos/${REPO_FULL}/issues/comments/${existing}" --input - >/dev/null
+            echo "updated preview comment ${existing}"
+          else
+            jq -n --arg b "${body}" '{body:$b}' | gh api -X POST "repos/${REPO_FULL}/issues/${PR_NUMBER}/comments" --input - >/dev/null
+            echo "created preview comment"
+          fi
+
+      - name: Clean up preview environment
+        if: github.event.action == 'closed'
+        env:
+          ACTION: down
+        run: |
+          set -euo pipefail
+          bash .github/scripts/coolify-preview.sh
