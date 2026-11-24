@@ -29,7 +29,7 @@ jobs:
       REPO_FULL: ${{ github.repository }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           persist-credentials: false
 
@@ -47,6 +47,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
+          HEAD_SHA="${{ github.event.pull_request.head.sha }}"
           url=$(grep -oP '^PREVIEW_URL=\K.*' /tmp/preview.out | tail -1)
           user=$(grep -oP '^PREVIEW_USER=\K.*' /tmp/preview.out | tail -1)
           pass=$(grep -oP '^PREVIEW_PASSWORD=\K.*' /tmp/preview.out | tail -1)
@@ -58,7 +59,7 @@ jobs:
           - API docs: ${url}/docs
           - Login: \`${user}\` / \`${pass}\`
 
-          <sub>Updated $(date -u +%Y-%m-%dT%H:%MZ) · commit ${GITHUB_SHA:0:7}</sub>
+          <sub>Updated $(date -u +%Y-%m-%dT%H:%MZ) · commit ${HEAD_SHA:0:7}</sub>
           EOF
           )
           existing=$(gh api "repos/${REPO_FULL}/issues/${PR_NUMBER}/comments" --paginate \
