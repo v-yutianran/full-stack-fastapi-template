@@ -96,3 +96,5 @@ The Full Stack FastAPI Template is licensed under the terms of the MIT license.
 staging 触发验证：2026-11-24T18:36:20Z
 
 staging 文档同步验证：2026-11-25T00:46:05Z
+
+staging 文档变更复验（新脚本）：2026-11-25T01:37:10Z
