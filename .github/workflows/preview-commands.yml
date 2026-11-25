@@ -20,7 +20,8 @@ jobs:
       (github.event.comment.author_association == 'OWNER' ||
        github.event.comment.author_association == 'MEMBER' ||
        github.event.comment.author_association == 'COLLABORATOR') &&
-      contains(github.event.comment.body, '/preview-')
+      (contains(github.event.comment.body, '/preview-redeploy') ||
+       contains(github.event.comment.body, '/preview-destroy'))
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
