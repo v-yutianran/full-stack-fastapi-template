@@ -24,6 +24,18 @@ jobs:
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           persist-credentials: false
+          fetch-depth: 0
+
+      - name: Detect app code changes
+        id: changes
+        env:
+          BEFORE_SHA: ${{ github.event.before }}
+          AFTER_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          relevant=$(bash .github/scripts/app-changes.sh "${BEFORE_SHA}" "${AFTER_SHA}")
+          echo "relevant=${relevant}" >> "$GITHUB_OUTPUT"
+          echo "app code changed: ${relevant}"
 
       - name: Trigger Coolify staging deployment
         id: trigger
@@ -74,11 +86,13 @@ jobs:
           exit 1
 
       - name: Set up Node.js
+        if: steps.changes.outputs.relevant == 'true'
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
 
       - name: Install Playwright
+        if: steps.changes.outputs.relevant == 'true'
         run: |
           set -euo pipefail
           cd smoke
@@ -86,6 +100,7 @@ jobs:
           npx playwright install --with-deps chromium
 
       - name: Run Playwright smoke tests against staging
+        if: steps.changes.outputs.relevant == 'true'
         id: smoke
         continue-on-error: true
         env:
@@ -100,11 +115,22 @@ jobs:
       - name: Report staging smoke result
         if: always()
         env:
+          RELEVANT: ${{ steps.changes.outputs.relevant }}
           SMOKE_OUTCOME: ${{ steps.smoke.outcome }}
           STAGING_URL: ${{ vars.STAGING_URL }}
           DEPLOYMENT_UUID: ${{ steps.trigger.outputs.deployment_uuid }}
         run: |
           set -euo pipefail
+          if [ "${RELEVANT}" != "true" ]; then
+            {
+              echo "### ⏭ Staging smoke tests skipped"
+              echo ""
+              echo "- 本次变更不涉及前后端/冒烟/构建代码，跳过冒烟"
+              echo "- URL: ${STAGING_URL}"
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "smoke skipped: no app code changes"
+            exit 0
+          fi
           if [ "${SMOKE_OUTCOME}" = "success" ]; then
             {
               echo "### ✅ Staging smoke tests passed"
