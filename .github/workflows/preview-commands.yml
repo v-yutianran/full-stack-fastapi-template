@@ -20,7 +20,9 @@ jobs:
       (github.event.comment.author_association == 'OWNER' ||
        github.event.comment.author_association == 'MEMBER' ||
        github.event.comment.author_association == 'COLLABORATOR') &&
-      (contains(github.event.comment.body, '/preview-redeploy') ||
+      (contains(github.event.comment.body, '/preview-status') ||
+       contains(github.event.comment.body, '/preview-logs') ||
+       contains(github.event.comment.body, '/preview-redeploy') ||
        contains(github.event.comment.body, '/preview-destroy'))
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -40,7 +42,11 @@ jobs:
         run: |
           set -euo pipefail
           action="none"
-          if printf '%s' "$COMMENT_BODY" | grep -qiE '(^|[[:space:]])/preview-redeploy([[:space:]]|$)'; then
+          if printf '%s' "$COMMENT_BODY" | grep -qiE '(^|[[:space:]])/preview-status([[:space:]]|$)'; then
+            action="status"
+          elif printf '%s' "$COMMENT_BODY" | grep -qiE '(^|[[:space:]])/preview-logs([[:space:]]|$)'; then
+            action="logs"
+          elif printf '%s' "$COMMENT_BODY" | grep -qiE '(^|[[:space:]])/preview-redeploy([[:space:]]|$)'; then
             action="redeploy"
           elif printf '%s' "$COMMENT_BODY" | grep -qiE '(^|[[:space:]])/preview-destroy([[:space:]]|$)'; then
             action="destroy"
@@ -64,6 +70,87 @@ jobs:
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           persist-credentials: false
+
+      - name: Preview status
+        if: steps.parse.outputs.action == 'status'
+        run: |
+          set -euo pipefail
+          name="pr-${PR_NUMBER}"
+          api="${COOLIFY_URL}/api/v1"
+          auth="Authorization: Bearer ${COOLIFY_TOKEN}"
+          app_uuid=$(curl -fsS -m 30 -H "${auth}" "${api}/applications" | jq -r --arg n "${name}" '.[] | select(.name == $n) | .uuid' | head -1)
+          if [ -z "${app_uuid}" ] || [ "${app_uuid}" = "null" ]; then
+            message=$(cat <<EOF
+          ## 🔎 Preview status
+
+          - PR #${PR_NUMBER} 当前没有预览环境（未部署或已销毁）
+          - 需要创建：评论 \`/preview-redeploy\`
+
+          <sub>Checked $(date -u +%Y-%m-%dT%H:%MZ)</sub>
+          EOF
+            )
+            jq -n --arg b "${message}" '{body:$b}' | gh api -X POST "repos/${REPO_FULL}/issues/${PR_NUMBER}/comments" --input - >/dev/null
+            exit 0
+          fi
+          detail=$(curl -fsS -m 30 -H "${auth}" "${api}/applications/${app_uuid}")
+          status=$(printf '%s' "${detail}" | jq -r '.status // "unknown"')
+          fqdn=$(printf '%s' "${detail}" | jq -r '.fqdn // ""')
+          container=$(printf '%s' "${detail}" | jq -r '.container_present // false')
+          updated=$(printf '%s' "${detail}" | jq -r '.updated_at // ""')
+          http_code=$(curl -s -o /dev/null -w '%{http_code}' -m 20 "${fqdn}/" 2>/dev/null || echo "n/a")
+          db_uuid=$(curl -fsS -m 30 -H "${auth}" "${api}/databases" | jq -r --arg n "preview-db-${name}" '.[] | select(.name == $n) | .uuid' | head -1)
+          db_status="absent"
+          if [ -n "${db_uuid}" ] && [ "${db_uuid}" != "null" ]; then
+            db_status=$(curl -fsS -m 30 -H "${auth}" "${api}/databases/${db_uuid}" | jq -r '.status // "unknown"')
+          fi
+          message=$(cat <<EOF
+          ## 🔎 Preview status
+
+          - Site: ${fqdn} → HTTP \`${http_code}\`
+          - App: \`${status}\` (container present: \`${container}\`)
+          - DB preview-db-${name}: \`${db_status}\`
+          - Last updated: \`${updated}\`
+
+          <sub>Checked $(date -u +%Y-%m-%dT%H:%MZ)</sub>
+          EOF
+          )
+          jq -n --arg b "${message}" '{body:$b}' | gh api -X POST "repos/${REPO_FULL}/issues/${PR_NUMBER}/comments" --input - >/dev/null
+
+      - name: Preview logs
+        if: steps.parse.outputs.action == 'logs'
+        run: |
+          set -euo pipefail
+          name="pr-${PR_NUMBER}"
+          api="${COOLIFY_URL}/api/v1"
+          auth="Authorization: Bearer ${COOLIFY_TOKEN}"
+          app_uuid=$(curl -fsS -m 30 -H "${auth}" "${api}/applications" | jq -r --arg n "${name}" '.[] | select(.name == $n) | .uuid' | head -1)
+          if [ -z "${app_uuid}" ] || [ "${app_uuid}" = "null" ]; then
+            message=$(cat <<EOF
+          ## 📜 Preview logs
+
+          - PR #${PR_NUMBER} 当前没有预览环境，无法获取日志
+          - 需要创建：评论 \`/preview-redeploy\`
+          EOF
+            )
+            jq -n --arg b "${message}" '{body:$b}' | gh api -X POST "repos/${REPO_FULL}/issues/${PR_NUMBER}/comments" --input - >/dev/null
+            exit 0
+          fi
+          response=$(curl -sS -m 60 -H "${auth}" "${api}/applications/${app_uuid}/logs?lines=200&show_timestamps=true")
+          text=$(printf '%s' "${response}" | jq -r '.logs // empty' 2>/dev/null || true)
+          if [ -z "${text}" ]; then
+            reason=$(printf '%s' "${response}" | jq -r '.message // "日志暂不可用"' 2>/dev/null || echo "日志暂不可用")
+            message=$(cat <<EOF
+          ## 📜 Preview logs
+
+          - ${reason}
+          - 可稍后重试，或在 Coolify 面板查看容器日志
+          EOF
+            )
+          else
+            snippet=$(printf '%s' "${text}" | tail -n 80 | awk 'length($0) > 400 { print substr($0, 1, 400) " ..."; next } { print }' | head -c 6000)
+            message=$(printf '## 📜 Preview logs (last 80 lines)\n\n<details><summary>展开日志</summary>\n\n~~~\n%s\n~~~\n</details>\n\n<sub>Checked %s</sub>' "${snippet}" "$(date -u +%Y-%m-%dT%H:%MZ)")
+          fi
+          jq -n --arg b "${message}" '{body:$b}' | gh api -X POST "repos/${REPO_FULL}/issues/${PR_NUMBER}/comments" --input - >/dev/null
 
       - name: Destroy preview environment
         if: steps.parse.outputs.action == 'destroy'
@@ -123,7 +210,7 @@ jobs:
           npx playwright test
 
       - name: Update preview comment
-        if: steps.parse.outputs.action != 'none'
+        if: steps.parse.outputs.action == 'redeploy' || steps.parse.outputs.action == 'destroy'
         env:
           HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
           ACTION_TAKEN: ${{ steps.parse.outputs.action }}
@@ -158,7 +245,7 @@ jobs:
           - API docs: ${PREVIEW_URL}/docs
           - Login: \`${PREVIEW_USER}\` / \`${PREVIEW_PASSWORD}\`
           - Smoke tests: ${result}
-          - 操作：评论 \`/preview-redeploy\` 重新部署并跑冒烟，评论 \`/preview-destroy\` 销毁环境
+          - 操作：\`/preview-status\` 查看状态 · \`/preview-logs\` 查看日志 · \`/preview-redeploy\` 重新部署 · \`/preview-destroy\` 销毁
 
           <sub>Manual redeploy $(date -u +%Y-%m-%dT%H:%MZ) · commit ${HEAD_SHA:0:7}</sub>
           EOF
@@ -174,7 +261,7 @@ jobs:
           fi
 
       - name: Report command result
-        if: always() && steps.parse.outputs.action != 'none'
+        if: always() && (steps.parse.outputs.action == 'redeploy' || steps.parse.outputs.action == 'destroy')
         env:
           ACTION_TAKEN: ${{ steps.parse.outputs.action }}
           SMOKE_OUTCOME: ${{ steps.smoke.outcome }}

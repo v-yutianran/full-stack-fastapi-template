@@ -33,6 +33,24 @@ jobs:
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           persist-credentials: false
+          fetch-depth: 0
+
+      - name: Detect app code changes
+        id: changes
+        env:
+          EVENT_ACTION: ${{ github.event.action }}
+          BEFORE_SHA: ${{ github.event.pull_request.base.sha }}
+          AFTER_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [ "${EVENT_ACTION}" = "closed" ]; then
+            echo "relevant=false" >> "$GITHUB_OUTPUT"
+            echo "closed event: skip change detection"
+            exit 0
+          fi
+          relevant=$(bash .github/scripts/app-changes.sh "${BEFORE_SHA}" "${AFTER_SHA}")
+          echo "relevant=${relevant}" >> "$GITHUB_OUTPUT"
+          echo "app code changed: ${relevant}"
 
       - name: Deploy preview environment
         if: github.event.action != 'closed'
@@ -47,8 +65,14 @@ jobs:
         id: comment
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEVANT: ${{ steps.changes.outputs.relevant }}
         run: |
           set -euo pipefail
+          if [ "${RELEVANT}" = "true" ]; then
+            smoke_state="⏳ running"
+          else
+            smoke_state="⏭ skipped (no app code changes)"
+          fi
           url=$(grep -oP '^PREVIEW_URL=\K.*' /tmp/preview.out | tail -1)
           user=$(grep -oP '^PREVIEW_USER=\K.*' /tmp/preview.out | tail -1)
           pass=$(grep -oP '^PREVIEW_PASSWORD=\K.*' /tmp/preview.out | tail -1)
@@ -59,8 +83,8 @@ jobs:
           - Site: ${url}
           - API docs: ${url}/docs
           - Login: \`${user}\` / \`${pass}\`
-          - Smoke tests: ⏳ running
-          - 操作：评论 \`/preview-redeploy\` 重新部署并跑冒烟，评论 \`/preview-destroy\` 销毁环境
+          - Smoke tests: ${smoke_state}
+          - 操作：\`/preview-status\` 查看状态 · \`/preview-logs\` 查看日志 · \`/preview-redeploy\` 重新部署 · \`/preview-destroy\` 销毁
 
           <sub>Updated $(date -u +%Y-%m-%dT%H:%MZ) · commit ${HEAD_SHA:0:7}</sub>
           EOF
@@ -83,12 +107,14 @@ jobs:
           echo "preview comment ready: ${comment_id}"
 
       - name: Set up Node.js
+        if: github.event.action != 'closed' && steps.changes.outputs.relevant == 'true'
         if: github.event.action != 'closed'
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
 
       - name: Install Playwright
+        if: github.event.action != 'closed' && steps.changes.outputs.relevant == 'true'
         if: github.event.action != 'closed'
         run: |
           set -euo pipefail
@@ -97,6 +123,7 @@ jobs:
           npx playwright install --with-deps chromium
 
       - name: Run Playwright smoke tests
+        if: github.event.action != 'closed' && steps.changes.outputs.relevant == 'true'
         if: github.event.action != 'closed'
         id: smoke
         continue-on-error: true
@@ -113,9 +140,13 @@ jobs:
         if: always() && github.event.action != 'closed'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEVANT: ${{ steps.changes.outputs.relevant }}
+          SMOKE_OUTCOME: ${{ steps.smoke.outcome }}
         run: |
           set -euo pipefail
-          if [ "${{ steps.smoke.outcome }}" = "success" ]; then
+          if [ "${RELEVANT}" != "true" ]; then
+            result="⏭ skipped (no app code changes)"
+          elif [ "${SMOKE_OUTCOME}" = "success" ]; then
             result="✅ passed"
           else
             result="❌ failed (see workflow logs)"
@@ -128,14 +159,14 @@ jobs:
           - API docs: ${PREVIEW_URL}/docs
           - Login: \`${PREVIEW_USER}\` / \`${PREVIEW_PASSWORD}\`
           - Smoke tests: ${result}
-          - 操作：评论 \`/preview-redeploy\` 重新部署并跑冒烟，评论 \`/preview-destroy\` 销毁环境
+          - 操作：\`/preview-status\` 查看状态 · \`/preview-logs\` 查看日志 · \`/preview-redeploy\` 重新部署 · \`/preview-destroy\` 销毁
 
           <sub>Updated $(date -u +%Y-%m-%dT%H:%MZ) · commit ${HEAD_SHA:0:7}</sub>
           EOF
           )
           jq -n --arg b "${body}" '{body:$b}' | gh api -X PATCH "repos/${REPO_FULL}/issues/comments/${COMMENT_ID}" --input - >/dev/null
           echo "smoke result: ${result}"
-          if [ "${{ steps.smoke.outcome }}" != "success" ]; then
+          if [ "${RELEVANT}" = "true" ] && [ "${SMOKE_OUTCOME}" != "success" ]; then
             echo "::error::Playwright smoke tests failed for the preview environment"
             exit 1
           fi
