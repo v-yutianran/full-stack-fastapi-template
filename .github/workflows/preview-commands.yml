@@ -126,12 +126,14 @@ jobs:
         if: steps.parse.outputs.action != 'none'
         env:
           HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
+          ACTION_TAKEN: ${{ steps.parse.outputs.action }}
+          SMOKE_OUTCOME: ${{ steps.smoke.outcome }}
         run: |
           set -euo pipefail
           comment_id=$(gh api "repos/${REPO_FULL}/issues/${PR_NUMBER}/comments" --paginate \
             --jq '.[] | select(.body | contains("<!-- coolify-preview -->")) | .id' | head -1 || true)
 
-          if [ "${{ steps.parse.outputs.action }}" = "destroy" ]; then
+          if [ "${ACTION_TAKEN}" = "destroy" ]; then
             body=$(cat <<EOF
           <!-- coolify-preview -->
           ## 🧹 Preview environment destroyed
@@ -143,7 +145,7 @@ jobs:
           EOF
             )
           else
-            if [ "${{ steps.smoke.outcome }}" = "success" ]; then
+            if [ "${SMOKE_OUTCOME}" = "success" ]; then
               result="✅ passed"
             else
               result="❌ failed (see workflow logs)"
