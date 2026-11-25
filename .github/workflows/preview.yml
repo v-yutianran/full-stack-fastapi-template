@@ -38,9 +38,9 @@ jobs:
       - name: Detect app code changes
         id: changes
         env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           EVENT_ACTION: ${{ github.event.action }}
-          BEFORE_SHA: ${{ github.event.pull_request.base.sha }}
-          AFTER_SHA: ${{ github.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           set -euo pipefail
           if [ "${EVENT_ACTION}" = "closed" ]; then
@@ -48,7 +48,7 @@ jobs:
             echo "closed event: skip change detection"
             exit 0
           fi
-          relevant=$(bash .github/scripts/app-changes.sh "${BEFORE_SHA}" "${AFTER_SHA}")
+          relevant=$(bash .github/scripts/app-changes.sh --pr "${PR_NUMBER}")
           echo "relevant=${relevant}" >> "$GITHUB_OUTPUT"
           echo "app code changed: ${relevant}"
 
