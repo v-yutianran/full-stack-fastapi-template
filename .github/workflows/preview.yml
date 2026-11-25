@@ -108,14 +108,12 @@ jobs:
 
       - name: Set up Node.js
         if: github.event.action != 'closed' && steps.changes.outputs.relevant == 'true'
-        if: github.event.action != 'closed'
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
 
       - name: Install Playwright
         if: github.event.action != 'closed' && steps.changes.outputs.relevant == 'true'
-        if: github.event.action != 'closed'
         run: |
           set -euo pipefail
           cd smoke
@@ -124,7 +122,6 @@ jobs:
 
       - name: Run Playwright smoke tests
         if: github.event.action != 'closed' && steps.changes.outputs.relevant == 'true'
-        if: github.event.action != 'closed'
         id: smoke
         continue-on-error: true
         env:
